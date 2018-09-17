@@ -1,14 +1,9 @@
 import tensorflow as tf
 
-import sys
-import os.path
-sys.path.append(os.path.abspath(os.path.join(
-    os.path.dirname(__file__), os.path.pardir)))
+from re3.re3_utils.tensorflow_util import tf_util
+from re3.re3_utils.tensorflow_util.CaffeLSTMCell import CaffeLSTMCell
 
-from re3_utils.tensorflow_util import tf_util
-from re3_utils.tensorflow_util.CaffeLSTMCell import CaffeLSTMCell
-
-from constants import LSTM_SIZE
+from re3.constants import LSTM_SIZE
 
 IMAGENET_MEAN = [123.151630838, 115.902882574, 103.062623801]
 

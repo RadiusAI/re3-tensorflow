@@ -4,32 +4,27 @@ import numpy as np
 import os
 import tensorflow as tf
 import time
+import itertools
 
-import sys
-import os.path
-sys.path.append(os.path.abspath(os.path.join(
-    os.path.dirname(__file__), os.path.pardir)))
+from re3 import network
 
-from tracker import network
-
-from re3_utils.util import bb_util
-from re3_utils.util import im_util
-from re3_utils.tensorflow_util import tf_util
+from re3.re3_utils.util import bb_util
+from re3.re3_utils.util import im_util
+from re3.re3_utils.tensorflow_util import tf_util
 
 # Network Constants
-from constants import CROP_SIZE
-from constants import CROP_PAD
-from constants import LSTM_SIZE
-from constants import LOG_DIR
-from constants import GPU_ID
-from constants import MAX_TRACK_LENGTH
+from re3.constants import CROP_SIZE
+from re3.constants import CROP_PAD
+from re3.constants import LSTM_SIZE
+from re3.constants import LOG_DIR
+from re3.constants import GPU_ID
+from re3.constants import MAX_TRACK_LENGTH
 
 SPEED_OUTPUT = True
 
 class Re3Tracker(object):
-    def __init__(self, gpu_id=GPU_ID):
+    def __init__(self, model_path, gpu_id=GPU_ID, iou_threshold=0.65):
         os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-        basedir = os.path.dirname(__file__)
         tf.Graph().as_default()
         self.imagePlaceholder = tf.placeholder(tf.uint8, shape=(None, CROP_SIZE, CROP_SIZE, 3))
         self.prevLstmState = tuple([tf.placeholder(tf.float32, shape=(None, LSTM_SIZE)) for _ in range(4)])
@@ -39,15 +34,14 @@ class Re3Tracker(object):
                 prevLstmState=self.prevLstmState)
         self.sess = tf_util.Session()
         self.sess.run(tf.global_variables_initializer())
-        ckpt = tf.train.get_checkpoint_state(os.path.join(basedir, '..', LOG_DIR, 'checkpoints'))
+        ckpt = tf.train.get_checkpoint_state(model_path)
         if ckpt is None:
-            raise IOError(
-                    ('Checkpoint model could not be found. '
-                    'Did you download the pretrained weights? '
-                    'Download them here: http://bit.ly/2L5deYF and read the Model section of the Readme.'))
+            raise IOError(('Checkpoint model could not be found.'))
         tf_util.restore(self.sess, ckpt.model_checkpoint_path)
 
         self.tracked_data = {}
+        self.ids = itertools.count()
+        self.iou_threshold = iou_threshold
 
         self.time = 0
         self.total_forward_count = -1
@@ -124,12 +118,48 @@ class Re3Tracker(object):
         return outputBox
 
 
+    @staticmethod
+    def iou(a, b):
+        left = max(a[0], b[0])
+        right = min(a[2], b[2])
+        top = max(a[1], b[1])
+        bottom = min(a[3], b[3])
+        
+        if right < left or bottom < top:
+            return 0
+
+        intersect = (right - left) * (bottom - top)
+        a_area = (a[3] - a[1]) * (a[2] - a[0])
+        b_area = (b[3] - b[1]) * (b[2] - b[0])
+        return intersect / float(a_area + b_area - intersect)
+
+
+    def update(self, image, dets, thresh = 0.65):
+        uids = [id_ for id_ in self.tracked_data]
+        tboxes = [self.tracked_data[uid][1] for uid in uids]
+        ious = np.array([[self.iou(tbox, dbox) for tbox in tboxes] for dbox in dets])
+
+        for i, uid in enumerate(uids):
+            if np.max(ious[:,i]) < thresh:
+                del self.tracked_data[uid]
+
+        for i, box in enumerate(dets):
+            if ious.size == 0 or np.max(ious[i]) < thresh:
+                lstmState = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
+                pastBBox = np.array(box)
+                prevImage = image
+                originalFeatures = None
+                forwardCount = 0
+                nid = next(self.ids)
+                self.tracked_data[nid] = (lstmState, pastBBox, image, originalFeatures, forwardCount)
+
+
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.
     # image{str or numpy array}: The current image or the path to the current image.
     # starting_boxes{None or dictionary of unique_id to 4x1 numpy array or list}: unique_ids to starting box.
     #    Starting boxes only need to be provided if it is a new track. Bounding boxes in X1, Y1, X2, Y2 format.
-    def multi_track(self, unique_ids, image, starting_boxes=None):
-        start_time = time.time()
+    def multi_track(self, image):
+        unique_ids = [uid for uid in self.tracked_data]
         assert type(unique_ids) == list, 'unique_ids must be a list for multi_track'
         assert len(unique_ids) > 1, 'unique_ids must be at least 2 elements'
 
@@ -138,27 +168,12 @@ class Re3Tracker(object):
         else:
             image = image.copy()
 
-        image_read_time = time.time() - start_time
-
         # Get inputs for each track.
         images = []
         lstmStates = [[] for _ in range(4)]
         pastBBoxesPadded = []
-        if starting_boxes is None:
-            starting_boxes = dict()
         for unique_id in unique_ids:
-            if unique_id in starting_boxes:
-                lstmState = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
-                pastBBox = np.array(starting_boxes[unique_id]) # turns list into numpy array if not and copies for safety.
-                prevImage = image
-                originalFeatures = None
-                forwardCount = 0
-                self.tracked_data[unique_id] = (lstmState, pastBBox, image, originalFeatures, forwardCount)
-            elif unique_id in self.tracked_data:
-                lstmState, pastBBox, prevImage, originalFeatures, forwardCount = self.tracked_data[unique_id]
-            else:
-                raise Exception('Unique_id %s with no initial bounding box' % unique_id)
-
+            lstmState, pastBBox, prevImage, originalFeatures, forwardCount = self.tracked_data[unique_id]
             croppedInput0, pastBBoxPadded = im_util.get_cropped_input(prevImage, pastBBox, CROP_PAD, CROP_SIZE)
             croppedInput1,_ = im_util.get_cropped_input(image, pastBBox, CROP_PAD, CROP_SIZE)
             pastBBoxesPadded.append(pastBBoxPadded)
@@ -203,21 +218,10 @@ class Re3Tracker(object):
             forwardCount += 1
             self.total_forward_count += 1
 
-            if unique_id in starting_boxes:
-                # Use label if it's given
-                outputBox = np.array(starting_boxes[unique_id])
-
             outputBoxes[uu,:] = outputBox
             self.tracked_data[unique_id] = (lstmState, outputBox, image, originalFeatures, forwardCount)
-        end_time = time.time()
-        if self.total_forward_count > 0:
-            self.time += (end_time - start_time - image_read_time)
-        if SPEED_OUTPUT and self.total_forward_count % 100 == 0:
-            print('Current tracking speed per object: %.3f FPS' % (len(unique_ids) / (end_time - start_time - image_read_time)))
-            print('Current tracking speed per frame:  %.3f FPS' % (1 / (end_time - start_time - image_read_time)))
-            print('Current image read speed:          %.3f FPS' % (1 / (image_read_time)))
-            print('Mean tracking speed per object:    %.3f FPS\n' % (self.total_forward_count / max(.00001, self.time)))
-        return outputBoxes
+
+        return unique_ids, outputBoxes
 
 
 

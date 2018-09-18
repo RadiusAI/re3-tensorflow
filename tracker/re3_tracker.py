@@ -134,17 +134,17 @@ class Re3Tracker(object):
         return intersect / float(a_area + b_area - intersect)
 
 
-    def update(self, image, dets, thresh = 0.65):
+    def update(self, image, dets):
         uids = [id_ for id_ in self.tracked_data]
         tboxes = [self.tracked_data[uid][1] for uid in uids]
         ious = np.array([[self.iou(tbox, dbox) for tbox in tboxes] for dbox in dets])
 
         for i, uid in enumerate(uids):
-            if np.max(ious[:,i]) < thresh:
+            if np.max(ious[:,i]) < self.iou_threshold:
                 del self.tracked_data[uid]
 
         for i, box in enumerate(dets):
-            if ious.size == 0 or np.max(ious[i]) < thresh:
+            if ious.size == 0 or np.max(ious[i]) < self.iou_threshold:
                 lstmState = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
                 pastBBox = np.array(box)
                 prevImage = image

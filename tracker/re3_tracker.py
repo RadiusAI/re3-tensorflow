@@ -160,8 +160,6 @@ class Re3Tracker(object):
     #    Starting boxes only need to be provided if it is a new track. Bounding boxes in X1, Y1, X2, Y2 format.
     def multi_track(self, image):
         unique_ids = [uid for uid in self.tracked_data]
-        assert type(unique_ids) == list, 'unique_ids must be a list for multi_track'
-        assert len(unique_ids) > 1, 'unique_ids must be at least 2 elements'
 
         if type(image) == str:
             image = cv2.imread(image)[:,:,::-1]

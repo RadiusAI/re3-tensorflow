@@ -40,6 +40,7 @@ class Re3Tracker(object):
         tf_util.restore(self.sess, ckpt.model_checkpoint_path)
 
         self.tracked_data = {}
+        self.track_labels = {}
         self.ids = itertools.count()
         self.iou_threshold = iou_threshold
 
@@ -134,7 +135,7 @@ class Re3Tracker(object):
         return intersect / float(a_area + b_area - intersect)
 
 
-    def update(self, image, dets):
+    def update(self, image, dets, labels):
         uids = [id_ for id_ in self.tracked_data]
         tboxes = [self.tracked_data[uid][1] for uid in uids]
         ious = np.array([[self.iou(tbox, dbox) for tbox in tboxes] for dbox in dets])
@@ -144,6 +145,7 @@ class Re3Tracker(object):
             for i, uid in enumerate(uids):
                 if best[i] < self.iou_threshold:
                     del self.tracked_data[uid]
+                    del self.track_labels[uid]
 
         best = np.max(ious, axis=1) if ious.size > 0 else np.zeros((len(dets),))
         for i, box in enumerate(dets):
@@ -153,8 +155,9 @@ class Re3Tracker(object):
                 prevImage = image
                 originalFeatures = None
                 forwardCount = 0
-                nid = next(self.ids)
-                self.tracked_data[nid] = (lstmState, pastBBox, image, originalFeatures, forwardCount)
+                uid = next(self.ids)
+                self.tracked_data[uid] = (lstmState, pastBBox, image, originalFeatures, forwardCount)
+                self.track_labels[uid] = labels[i]
 
 
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.
@@ -222,7 +225,7 @@ class Re3Tracker(object):
             outputBoxes[uu,:] = outputBox
             self.tracked_data[unique_id] = (lstmState, outputBox, image, originalFeatures, forwardCount)
 
-        return unique_ids, outputBoxes
+        return unique_ids, outputBoxes, [self.track_labels[uid] for uid in unique_ids]
 
 
 

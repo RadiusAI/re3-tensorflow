@@ -139,12 +139,15 @@ class Re3Tracker(object):
         tboxes = [self.tracked_data[uid][1] for uid in uids]
         ious = np.array([[self.iou(tbox, dbox) for tbox in tboxes] for dbox in dets])
 
-        for i, uid in enumerate(uids):
-            if np.max(ious[:,i]) < self.iou_threshold:
-                del self.tracked_data[uid]
+        if ious.size > 0:
+            best = np.max(ious, axis=0)
+            for i, uid in enumerate(uids):
+                if best[i] < self.iou_threshold:
+                    del self.tracked_data[uid]
 
+        best = np.max(ious, axis=1) if ious.size > 0 else np.zeros((len(dets),))
         for i, box in enumerate(dets):
-            if ious.size == 0 or np.max(ious[i]) < self.iou_threshold:
+            if best[i] < self.iou_threshold:
                 lstmState = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
                 pastBBox = np.array(box)
                 prevImage = image

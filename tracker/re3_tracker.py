@@ -6,6 +6,9 @@ import tensorflow as tf
 import time
 import itertools
 
+from skimage.feature import hog
+from scipy.spatial import distance
+
 from re3 import network
 
 from re3.re3_utils.util import bb_util
@@ -43,6 +46,7 @@ class Re3Tracker(object):
         self.track_labels = {}
         self.ids = itertools.count()
         self.iou_threshold = iou_threshold
+        self.initialized = False
 
         self.time = 0
         self.total_forward_count = -1
@@ -134,13 +138,19 @@ class Re3Tracker(object):
         b_area = (b[3] - b[1]) * (b[2] - b[0])
         return intersect / float(a_area + b_area - intersect)
 
+    @staticmethod
+    def featurize(image, box):
+        crop, _ = im_util.get_cropped_input(image, box, CROP_PAD, CROP_SIZE)
+        return hog(np.sum(crop, axis=2))
 
-    def update(self, image, dets, labels):
+
+    def update(self, image, dets, feats, labels):
+        self.initialized = True
         uids = [id_ for id_ in self.tracked_data]
         tboxes = [self.tracked_data[uid][1] for uid in uids]
         ious = np.array([[self.iou(tbox, dbox) for tbox in tboxes] for dbox in dets])
 
-        if ious.size > 0:
+        if ious.size > 0 and len(uids) > 0:
             best = np.max(ious, axis=0)
             for i, uid in enumerate(uids):
                 if best[i] < self.iou_threshold:

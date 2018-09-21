@@ -52,7 +52,7 @@ class Track:
 
 
 class Re3Tracker(object):
-    def __init__(self, model_path, gpu_id=GPU_ID, iou_threshold=0.5):
+    def __init__(self, model_path, gpu_id=GPU_ID, iou_threshold=0.5, confirm_period=2):
         os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
         tf.Graph().as_default()
         self.imagePlaceholder = tf.placeholder(tf.uint8, shape=(None, CROP_SIZE, CROP_SIZE, 3))
@@ -71,6 +71,7 @@ class Re3Tracker(object):
         self.tracks = {}
         self.ids = itertools.count()
         self.iou_threshold = iou_threshold
+        self.confirm_period = confirm_period
         self.total_forward_count = -1
 
 
@@ -104,21 +105,6 @@ class Re3Tracker(object):
 
     def drop_hanging(self, h, w):
         pass
-        # uids = [id_ for id_ in self.tracks]
-        # for uid in uids:
-        #     track = self.tracks[uid]
-        #     if not self.edgey(h, w, track.box):
-        #         continue
-        #     feats = self.featurize(track.image, track.box)
-        #     cos = 1 - distance.cosine(feats, track.original)
-        #     # current = np.ravel(track.state)
-        #     # original = np.ravel(track.features)
-        #     # cos = 1 - distance.cosine(current, original)
-        #     self.tracks[uid].original = feats
-        #     print(cos)
-        #     if cos < 0.4:
-        #         print('absolute hanger')
-        #         del self.tracks[uid]
 
 
     def update(self, image, dets, scores, labels):
@@ -134,7 +120,7 @@ class Re3Tracker(object):
             for box,label in zip(dets, labels):
                 uid = next(self.ids)
                 feats = self.featurize(image, box)
-                self.tracks[uid] = Track(uid, box, image, label, feats, 2)
+                self.tracks[uid] = Track(uid, box, image, label, feats, self.confirm_period)
             return
 
         if dets.size == 0:
@@ -164,7 +150,7 @@ class Re3Tracker(object):
             if i not in dtot or master[dtot[i], i] < self.iou_threshold:
                 uid = next(self.ids)
                 feats = self.featurize(image, box)
-                self.tracks[uid] = Track(uid, box, image, label, feats, 0)
+                self.tracks[uid] = Track(uid, box, image, label, feats, 1)
 
 
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.
@@ -232,7 +218,7 @@ class Re3Tracker(object):
             self.tracks[unique_id].update(lstmState, outputBox, image, originalFeatures, forwardCount)
 
 
-        mask = [self.tracks[uid].life > 0 for uid in unique_ids]
+        mask = [self.tracks[uid].life >= self.confirm_period for uid in unique_ids]
         uids = [uid for uid, confirmed in zip(unique_ids, mask) if confirmed]
         if len(uids) == 0:
             return [], np.zeros((0,0)), []

@@ -3,11 +3,11 @@ import glob
 import numpy as np
 import os
 import tensorflow as tf
-import time
 import itertools
 
 from skimage.feature import hog
 from scipy.spatial import distance
+from scipy.optimize import linear_sum_assignment
 
 from re3 import network
 
@@ -27,7 +27,7 @@ SPEED_OUTPUT = True
 
 
 class Track:
-    def __init__(self, uid, box, image, label, original):
+    def __init__(self, uid, box, image, label, original, life):
         self.uid = uid
         self.state = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
         self.box = np.array(box)
@@ -35,7 +35,8 @@ class Track:
         self.features = None
         self.count = 0
         self.label = label
-        self.history = [(1,1),tuple(),(1,1)]
+        self.flicker = False
+        self.life = life
         self.original = original
 
     @property
@@ -51,7 +52,7 @@ class Track:
 
 
 class Re3Tracker(object):
-    def __init__(self, model_path, gpu_id=GPU_ID, iou_threshold=0.65):
+    def __init__(self, model_path, gpu_id=GPU_ID, iou_threshold=0.5):
         os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
         tf.Graph().as_default()
         self.imagePlaceholder = tf.placeholder(tf.uint8, shape=(None, CROP_SIZE, CROP_SIZE, 3))
@@ -70,9 +71,6 @@ class Re3Tracker(object):
         self.tracks = {}
         self.ids = itertools.count()
         self.iou_threshold = iou_threshold
-        self.initialized = False
-
-        self.time = 0
         self.total_forward_count = -1
 
 
@@ -96,38 +94,96 @@ class Re3Tracker(object):
         crop, _ = im_util.get_cropped_input(image, box, CROP_PAD, CROP_SIZE)
         return hog(np.sum(crop, axis=2))
 
-
-    def should_drop(self, history):
-        a, b, c = history[-3:]
-        if np.any(a + b + c / 3 < self.iou_threshold):
-            return True
-        if c[1] < 0.33:
-            return True
-        return False
+    @staticmethod
+    def edgey(h, w, box):
+        l, t = (box[:2] + box[2:]) / 2
+        r, b = w-l, h-t
+        dist = min([t/h, l/w, b/h, r/w])
+        return dist < 0.1
 
 
-    def update(self, image, dets, feats, labels):
-        self.initialized = True
+    def drop_hanging(self, h, w):
+        pass
+        # uids = [id_ for id_ in self.tracks]
+        # for uid in uids:
+        #     track = self.tracks[uid]
+        #     if not self.edgey(h, w, track.box):
+        #         continue
+        #     feats = self.featurize(track.image, track.box)
+        #     cos = 1 - distance.cosine(feats, track.original)
+        #     # current = np.ravel(track.state)
+        #     # original = np.ravel(track.features)
+        #     # cos = 1 - distance.cosine(current, original)
+        #     self.tracks[uid].original = feats
+        #     print(cos)
+        #     if cos < 0.4:
+        #         print('absolute hanger')
+        #         del self.tracks[uid]
+
+
+    def update(self, image, dets, scores, labels):
+        """
+            :image [np.array[float]] | (h,w,3) | bgr image for a frame
+            :dets  [np.array[float]] |  (d,4)  | tlbr detector box per detection
+            :scores[np.array[float]] |  (d,)   | detector score per detection
+            :labels[list[string]]    |  (d,)   | detector label per detection
+        """
+        jumbo = np.copy(image)
+        for uid in self.tracks:
+            track = self.tracks[uid]
+            box = track.box
+            box = box.astype(int)
+            cv2.rectangle(jumbo, tuple(box[:2]), tuple(box[2:]), (0,0,255))
+
+        for box in dets:
+            box = box.astype(int)
+            cv2.rectangle(jumbo, tuple(box[:2]), tuple(box[2:]), (255,0,0))
+        cv2.imshow('jumbo', jumbo)
+
         uids = [id_ for id_ in self.tracks]
-        tboxes = [self.tracks[uid].box for uid in uids]
-        ious = np.array([[self.iou(tbox, dbox) for tbox in tboxes] for dbox in dets])
 
-        if ious.size > 0 and len(uids) > 0:
-            best = np.max(ious, axis=0)
-            for i, uid in enumerate(uids):
-                track = self.tracks[uid]
-                feats = self.featurize(track.image, track.box)
-                cos = 1 - distance.cosine(feats, track.original)
-                track.history.append(np.array([cos, best[i]]))
-                if self.should_drop(track.history):
-                    del self.tracks[uid]
-
-        best = np.max(ious, axis=1) if ious.size > 0 else np.zeros((len(dets),))
-        for i, box in enumerate(dets):
-            if best[i] < self.iou_threshold:
+        if len(uids) == 0:
+            for box,label in zip(dets, labels):
                 uid = next(self.ids)
                 feats = self.featurize(image, box)
-                self.tracks[uid] = Track(uid, box, image, labels[i], feats)
+                self.tracks[uid] = Track(uid, box, image, label, feats, 2)
+            return
+
+        tboxes = [self.tracks[uid].box for uid in uids]
+        ious = np.array([[self.iou(tbox, dbox) for dbox in dets] for tbox in tboxes])
+        master = ious * (scores / np.mean(scores))
+        rows, columns = linear_sum_assignment(-1 * master)
+
+        for r,c in zip(rows, columns):
+            track = self.tracks[uids[r]]
+            p = master[r][c]
+            tcrop, _ = im_util.get_cropped_input(image, track.box, CROP_PAD, CROP_SIZE)
+            dcrop, _ = im_util.get_cropped_input(image, dets[c], CROP_PAD, CROP_SIZE)
+
+            print(p)
+            cv2.imshow('track', tcrop)
+            cv2.imshow('detection', dcrop)
+            cv2.waitKey()
+
+        ttod = {r: c for r,c in zip(rows, columns)}
+        dtot = {c: r for r,c in zip(rows, columns)}
+
+        for i, uid in enumerate(uids):
+            if i not in ttod or master[i, ttod[i]] < 0.5:
+                del self.tracks[uid]
+            else:
+                uid = uids[i]
+                box = dets[ttod[i]]
+                label = labels[ttod[i]]
+                life = self.tracks[uid].life
+                feats = self.featurize(image, box)
+                self.tracks[uid] = Track(uid, box, image, label, feats, life+1)
+
+        for i, (box, label) in enumerate(zip(dets, labels)):
+            if i not in dtot or master[dtot[i], i] < 0.5:
+                uid = next(self.ids)
+                feats = self.featurize(image, box)
+                self.tracks[uid] = Track(uid, box, image, label, feats, 0)
 
 
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.
@@ -136,6 +192,8 @@ class Re3Tracker(object):
     #    Starting boxes only need to be provided if it is a new track. Bounding boxes in X1, Y1, X2, Y2 format.
     def multi_track(self, image):
         unique_ids = [uid for uid in self.tracks]
+        if len(unique_ids) == 0:
+            return [], np.zeros((0,0)), []
 
         image = image.copy()[:,:,::-1]
 
@@ -192,7 +250,13 @@ class Re3Tracker(object):
             outputBoxes[uu,:] = outputBox
             self.tracks[unique_id].update(lstmState, outputBox, image, originalFeatures, forwardCount)
 
-        return unique_ids, outputBoxes, [self.tracks[uid].label for uid in unique_ids]
+
+        mask = [self.tracks[uid].life > 0 for uid in unique_ids]
+        uids = [uid for uid, confirmed in zip(unique_ids, mask) if confirmed]
+        if len(uids) == 0:
+            return [], np.zeros((0,0)), []
+        boxes = np.array([box for box, confirmed in zip(outputBoxes, mask) if confirmed])
+        return uids, boxes, [self.tracks[uid].label for uid in uids]
 
 
 

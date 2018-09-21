@@ -150,8 +150,8 @@ class Re3Tracker(object):
             return
 
         if dets.size == 0:
-            ttod = {}
-            dtot = {}
+            rows = []
+            columns = []
         else:
             tboxes = [self.tracks[uid].box for uid in uids]
             ious = np.array([[self.iou(tbox, dbox) for dbox in dets] for tbox in tboxes])

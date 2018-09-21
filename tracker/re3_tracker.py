@@ -173,7 +173,7 @@ class Re3Tracker(object):
         dtot = {c: r for r,c in zip(rows, columns)}
 
         for i, uid in enumerate(uids):
-            if i not in ttod or master[i, ttod[i]] < 0.5:
+            if i not in ttod or master[i, ttod[i]] < self.iou_threshold:
                 del self.tracks[uid]
             else:
                 uid = uids[i]
@@ -184,7 +184,7 @@ class Re3Tracker(object):
                 self.tracks[uid] = Track(uid, box, image, label, feats, life+1)
 
         for i, (box, label) in enumerate(zip(dets, labels)):
-            if i not in dtot or master[dtot[i], i] < 0.5:
+            if i not in dtot or master[dtot[i], i] < self.iou_threshold:
                 uid = next(self.ids)
                 feats = self.featurize(image, box)
                 self.tracks[uid] = Track(uid, box, image, label, feats, 0)

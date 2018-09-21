@@ -128,18 +128,6 @@ class Re3Tracker(object):
             :scores[np.array[float]] |  (d,)   | detector score per detection
             :labels[list[string]]    |  (d,)   | detector label per detection
         """
-        # jumbo = np.copy(image)
-        # for uid in self.tracks:
-        #     track = self.tracks[uid]
-        #     box = track.box
-        #     box = box.astype(int)
-        #     cv2.rectangle(jumbo, tuple(box[:2]), tuple(box[2:]), (0,0,255))
-
-        # for box in dets:
-        #     box = box.astype(int)
-        #     cv2.rectangle(jumbo, tuple(box[:2]), tuple(box[2:]), (255,0,0))
-        # cv2.imshow('jumbo', jumbo)
-
         uids = [id_ for id_ in self.tracks]
 
         if len(uids) == 0:
@@ -157,17 +145,6 @@ class Re3Tracker(object):
             ious = np.array([[self.iou(tbox, dbox) for dbox in dets] for tbox in tboxes])
             master = ious * (scores / np.mean(scores))
             rows, columns = linear_sum_assignment(-1 * master)
-
-        # for r,c in zip(rows, columns):
-        #     track = self.tracks[uids[r]]
-        #     p = master[r][c]
-        #     tcrop, _ = im_util.get_cropped_input(image, track.box, CROP_PAD, CROP_SIZE)
-        #     dcrop, _ = im_util.get_cropped_input(image, dets[c], CROP_PAD, CROP_SIZE)
-
-        #     print(p)
-        #     cv2.imshow('track', tcrop)
-        #     cv2.imshow('detection', dcrop)
-        #     cv2.waitKey()
 
         ttod = {r: c for r,c in zip(rows, columns)}
         dtot = {c: r for r,c in zip(rows, columns)}

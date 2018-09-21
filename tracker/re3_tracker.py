@@ -149,10 +149,14 @@ class Re3Tracker(object):
                 self.tracks[uid] = Track(uid, box, image, label, feats, 2)
             return
 
-        tboxes = [self.tracks[uid].box for uid in uids]
-        ious = np.array([[self.iou(tbox, dbox) for dbox in dets] for tbox in tboxes])
-        master = ious * (scores / np.mean(scores))
-        rows, columns = linear_sum_assignment(-1 * master)
+        if dets.size == 0:
+            ttod = {}
+            dtot = {}
+        else:
+            tboxes = [self.tracks[uid].box for uid in uids]
+            ious = np.array([[self.iou(tbox, dbox) for dbox in dets] for tbox in tboxes])
+            master = ious * (scores / np.mean(scores))
+            rows, columns = linear_sum_assignment(-1 * master)
 
         # for r,c in zip(rows, columns):
         #     track = self.tracks[uids[r]]

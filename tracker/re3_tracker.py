@@ -103,7 +103,7 @@ class Re3Tracker(object):
         if len(uids) == 0:
             for box,label in zip(dets, labels):
                 uid = next(self.ids)
-                self.tracks[uid] = Track(uid, box, image, label, self.confirm_period)
+                self.tracks[uid] = Track(uid, box, image, label, self.n_init)
             return
 
         if dets.size == 0:
@@ -118,7 +118,7 @@ class Re3Tracker(object):
         # check track assignments
         assign = {r: c for r,c in zip(rows, columns)}
         for i, uid in enumerate(uids):
-            if uid not in assign or master[i, assign[i]] < self.iou_threshold:
+            if i not in assign or master[i, assign[i]] < self.iou_threshold:
                 self.tracks[uid].age += 1
                 if self.tracks[uid].life < self.n_init or self.tracks[uid].age == self.max_age:
                     del self.tracks[uid]
@@ -129,11 +129,11 @@ class Re3Tracker(object):
                 self.tracks[uid].life += 1
 
         # check det assignments
-        assign = {c: r for c,r in zip(rows, columns)}
-        for i, box in enumerates(dets):
-            if i not in assign or assign[i] not in self.tracks:
+        assign = {c: r for r,c in zip(rows, columns)}
+        for i, box in enumerate(dets):
+            if i not in assign or uids[assign[i]] not in self.tracks:
                 uid = next(self.ids)
-                self.tracks[uid] = Track(uid, box, image, label, 1)
+                self.tracks[uid] = Track(uid, box, image, labels[i], 1)
 
 
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.

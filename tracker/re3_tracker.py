@@ -27,7 +27,7 @@ SPEED_OUTPUT = True
 
 
 class Track:
-    def __init__(self, uid, box, image, label, original, life):
+    def __init__(self, uid, box, image, label, life):
         self.uid = uid
         self.state = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
         self.box = np.array(box)
@@ -37,7 +37,6 @@ class Track:
         self.label = label
         self.flicker = False
         self.life = life
-        self.original = original
 
     @property
     def data(self):
@@ -90,19 +89,6 @@ class Re3Tracker(object):
         b_area = (b[3] - b[1]) * (b[2] - b[0])
         return intersect / float(a_area + b_area - intersect)
 
-    @staticmethod
-    def featurize(image, box):
-        crop, _ = im_util.get_cropped_input(image, box, CROP_PAD, CROP_SIZE)
-        return hog(np.sum(crop, axis=2))
-
-    @staticmethod
-    def edgey(h, w, box):
-        l, t = (box[:2] + box[2:]) / 2
-        r, b = w-l, h-t
-        dist = min([t/h, l/w, b/h, r/w])
-        return dist < 0.1
-
-
     def drop_hanging(self, h, w):
         pass
 
@@ -119,8 +105,7 @@ class Re3Tracker(object):
         if len(uids) == 0:
             for box,label in zip(dets, labels):
                 uid = next(self.ids)
-                feats = self.featurize(image, box)
-                self.tracks[uid] = Track(uid, box, image, label, feats, self.confirm_period)
+                self.tracks[uid] = Track(uid, box, image, label, self.confirm_period)
             return
 
         if dets.size == 0:
@@ -140,17 +125,14 @@ class Re3Tracker(object):
                 del self.tracks[uid]
             else:
                 uid = uids[i]
-                box = dets[ttod[i]]
-                label = labels[ttod[i]]
-                life = self.tracks[uid].life
-                feats = self.featurize(image, box)
-                self.tracks[uid] = Track(uid, box, image, label, feats, life+1)
+                self.tracks[uid].box = dets[ttod[i]]
+                self.tracks[uid].label = labels[ttod[i]]
+                self.tracks[uid].life += 1
 
         for i, (box, label) in enumerate(zip(dets, labels)):
             if i not in dtot or master[dtot[i], i] < self.iou_threshold:
                 uid = next(self.ids)
-                feats = self.featurize(image, box)
-                self.tracks[uid] = Track(uid, box, image, label, feats, 1)
+                self.tracks[uid] = Track(uid, box, image, label, 1)
 
 
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.

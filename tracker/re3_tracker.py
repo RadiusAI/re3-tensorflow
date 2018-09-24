@@ -35,8 +35,8 @@ class Track:
         self.features = None
         self.count = 0
         self.label = label
-        self.flicker = False
         self.life = life
+        self.age = 0
 
     @property
     def data(self):
@@ -51,7 +51,7 @@ class Track:
 
 
 class Re3Tracker(object):
-    def __init__(self, model_path, gpu_id=GPU_ID, iou_threshold=0.5, confirm_period=2):
+    def __init__(self, model_path, iou_threshold, n_init, max_age, gpu_id=GPU_ID):
         os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
         tf.Graph().as_default()
         self.imagePlaceholder = tf.placeholder(tf.uint8, shape=(None, CROP_SIZE, CROP_SIZE, 3))
@@ -70,7 +70,8 @@ class Re3Tracker(object):
         self.tracks = {}
         self.ids = itertools.count()
         self.iou_threshold = iou_threshold
-        self.confirm_period = confirm_period
+        self.n_init = n_init
+        self.max_age = max_age
         self.total_forward_count = -1
 
 
@@ -89,10 +90,7 @@ class Re3Tracker(object):
         b_area = (b[3] - b[1]) * (b[2] - b[0])
         return intersect / float(a_area + b_area - intersect)
 
-    def drop_hanging(self, h, w):
-        pass
-
-
+    
     def update(self, image, dets, scores, labels):
         """
             :image [np.array[float]] | (h,w,3) | bgr image for a frame
@@ -117,20 +115,23 @@ class Re3Tracker(object):
             master = ious * (scores / np.mean(scores))
             rows, columns = linear_sum_assignment(-1 * master)
 
-        ttod = {r: c for r,c in zip(rows, columns)}
-        dtot = {c: r for r,c in zip(rows, columns)}
-
+        # check track assignments
+        assign = {r: c for r,c in zip(rows, columns)}
         for i, uid in enumerate(uids):
-            if i not in ttod or master[i, ttod[i]] < self.iou_threshold:
-                del self.tracks[uid]
+            if uid not in assign or master[i, assign[i]] < self.iou_threshold:
+                self.tracks[uid].age += 1
+                if self.tracks[uid].life < self.n_init or self.tracks[uid].age == self.max_age:
+                    del self.tracks[uid]
             else:
-                uid = uids[i]
-                self.tracks[uid].box = dets[ttod[i]]
-                self.tracks[uid].label = labels[ttod[i]]
+                self.tracks[uid].age = 0
+                self.tracks[uid].box = dets[assign[i]]
+                self.tracks[uid].label = labels[assign[i]]
                 self.tracks[uid].life += 1
 
-        for i, (box, label) in enumerate(zip(dets, labels)):
-            if i not in dtot or master[dtot[i], i] < self.iou_threshold:
+        # check det assignments
+        assign = {c: r for c,r in zip(rows, columns)}
+        for i, box in enumerates(dets):
+            if i not in assign or assign[i] not in self.tracks:
                 uid = next(self.ids)
                 self.tracks[uid] = Track(uid, box, image, label, 1)
 
@@ -200,7 +201,7 @@ class Re3Tracker(object):
             self.tracks[unique_id].update(lstmState, outputBox, image, originalFeatures, forwardCount)
 
 
-        mask = [self.tracks[uid].life >= self.confirm_period for uid in unique_ids]
+        mask = [self.tracks[uid].life >= self.n_init for uid in unique_ids]
         uids = [uid for uid, confirmed in zip(unique_ids, mask) if confirmed]
         if len(uids) == 0:
             return [], np.zeros((0,0)), []

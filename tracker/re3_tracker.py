@@ -77,18 +77,18 @@ class Re3Tracker(object):
 
     @staticmethod
     def iou(a, b):
-        left = max(a[0], b[0])
-        right = min(a[2], b[2])
-        top = max(a[1], b[1])
-        bottom = min(a[3], b[3])
-        
-        if right < left or bottom < top:
-            return 0
+        a = a[:,:,np.newaxis]
+        b = b.T[np.newaxis]
 
-        intersect = (right - left) * (bottom - top)
-        a_area = (a[3] - a[1]) * (a[2] - a[0])
-        b_area = (b[3] - b[1]) * (b[2] - b[0])
-        return intersect / float(a_area + b_area - intersect)
+        lt = np.maximum(a[:,:2], b[:,:2])
+        rb = np.minimum(a[:,2:], b[:,2:])
+        intersect = np.prod(np.maximum(rb - lt, 0), axis=1)
+
+        a_area = np.prod(a[:,2:] - a[:,:2], axis=1)
+        b_area = np.prod(b[:,2:] - b[:,:2], axis=1)
+        union = a_area + b_area - intersect
+
+        return intersect / union
 
     
     def update(self, image, dets, scores, labels):
@@ -110,13 +110,13 @@ class Re3Tracker(object):
             rows = []
             columns = []
         else:
-            tboxes = [self.tracks[uid].box for uid in uids]
-            ious = np.array([[self.iou(tbox, dbox) for dbox in dets] for tbox in tboxes])
+            tboxes = np.array([self.tracks[uid].box for uid in uids])
+            ious = self.iou(tboxes, dets)
             master = ious * (scores / np.mean(scores))
             rows, columns = linear_sum_assignment(-1 * master)
 
         # check track assignments
-        assign = {r: c for r,c in zip(rows, columns)}
+        assign = dict(zip(rows, columns))
         for i, uid in enumerate(uids):
             if i not in assign or master[i, assign[i]] < self.iou_threshold:
                 self.tracks[uid].age += 1
@@ -129,7 +129,7 @@ class Re3Tracker(object):
                 self.tracks[uid].life += 1
 
         # check det assignments
-        assign = {c: r for r,c in zip(rows, columns)}
+        assign = dict(zip(columns, rows))
         for i, box in enumerate(dets):
             if i not in assign or uids[assign[i]] not in self.tracks:
                 uid = next(self.ids)
@@ -201,12 +201,7 @@ class Re3Tracker(object):
             self.tracks[unique_id].update(lstmState, outputBox, image, originalFeatures, forwardCount)
 
 
-        mask = [self.tracks[uid].life >= self.n_init for uid in unique_ids]
-        uids = [uid for uid, confirmed in zip(unique_ids, mask) if confirmed]
-        if len(uids) == 0:
-            return [], np.zeros((0,0)), []
-        boxes = np.array([box for box, confirmed in zip(outputBoxes, mask) if confirmed])
-        return uids, boxes, [self.tracks[uid].label for uid in uids]
+        return {uid: (track.box, track.label) for uid, track in self.tracks.items()}
 
 
 

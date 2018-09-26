@@ -143,7 +143,7 @@ class Re3Tracker(object):
     def multi_track(self, image):
         unique_ids = [uid for uid in self.tracks]
         if len(unique_ids) == 0:
-            return [], np.zeros((0,0)), []
+            return {}
 
         image = image.copy()[:,:,::-1]
 

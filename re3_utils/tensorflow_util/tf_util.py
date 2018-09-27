@@ -162,7 +162,7 @@ def restore(session, save_file, raise_if_not_found=False):
     restore_vars = []
     restored_var_names = set()
     restored_var_new_shape = []
-    print('Restoring:')
+    # print('Restoring:')
     with tf.variable_scope(tf.get_variable_scope(), reuse=True):
         for var_name, saved_var_name in var_names:
             if 'global_step' in var_name:
@@ -172,20 +172,20 @@ def restore(session, save_file, raise_if_not_found=False):
             var_shape = curr_var.get_shape().as_list()
             if var_shape == saved_shapes[saved_var_name]:
                 restore_vars.append(curr_var)
-                print(str(saved_var_name) + ' -> \t' + str(var_shape) + ' = ' +
-                      str(int(np.prod(var_shape) * 4 / 10**6)) + 'MB')
+                # print(str(saved_var_name) + ' -> \t' + str(var_shape) + ' = ' +
+                #       str(int(np.prod(var_shape) * 4 / 10**6)) + 'MB')
                 restored_var_names.add(saved_var_name)
             else:
                 print('Shape mismatch for var', saved_var_name, 'expected', var_shape,
                       'got', saved_shapes[saved_var_name])
                 #restored_var_new_shape.append((saved_var_name, curr_var, reader.get_tensor(saved_var_name)))
                 #print('bad things')
-    ignored_var_names = sorted(list(set(saved_shapes.keys()) - restored_var_names))
-    print('\n')
-    if len(ignored_var_names) == 0:
-        print('Restored all variables')
-    else:
-        print('Did not restore:' + '\n\t'.join(ignored_var_names))
+    # ignored_var_names = sorted(list(set(saved_shapes.keys()) - restored_var_names))
+    # print('\n')
+    # if len(ignored_var_names) == 0:
+    #     print('Restored all variables')
+    # else:
+    #     print('Did not restore:' + '\n\t'.join(ignored_var_names))
 
     if len(restore_vars) > 0:
         saver = tf.train.Saver(restore_vars)
@@ -205,7 +205,7 @@ def restore(session, save_file, raise_if_not_found=False):
         session.run(assign_ops)
         print('Copying unmatched weights done')
     '''
-    print('Restored %s' % save_file)
+    # print('Restored %s' % save_file)
     try:
         start_iter = int(save_file.split('-')[-1])
     except ValueError:

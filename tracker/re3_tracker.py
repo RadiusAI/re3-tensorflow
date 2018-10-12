@@ -31,7 +31,7 @@ class Track:
         self.uid = uid
         self.state = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
         self.box = np.array(box)
-        self.image = image
+        self.crop = im_util.get_cropped_input(image, box, CROP_PAD, CROP_SIZE)
         self.features = None
         self.count = 0
         self.label = label
@@ -40,12 +40,12 @@ class Track:
 
     @property
     def data(self):
-        return self.state, self.box, self.image, self.features, self.count
+        return self.state, self.box, self.crop, self.features, self.count
 
     def update(self, state, box, image, features, count):
         self.state = state
         self.box = box
-        self.image = image
+        self.crop = im_util.get_cropped_input(image, box, CROP_PAD, CROP_SIZE)
         self.features = features
         self.count = count
 
@@ -98,9 +98,9 @@ class Re3Tracker(object):
             :scores[np.array[float]] |  (d,)   | detector score per detection
             :labels[list[string]]    |  (d,)   | detector label per detection
         """
-        uids = [id_ for id_ in self.tracks]
+        tracks = list(self.tracks.items())
 
-        if len(uids) == 0:
+        if len(tracks) == 0:
             for box,label in zip(dets, labels):
                 uid = next(self.ids)
                 self.tracks[uid] = Track(uid, box, image, label, self.n_init)
@@ -110,28 +110,29 @@ class Re3Tracker(object):
             rows = []
             columns = []
         else:
-            tboxes = np.array([self.tracks[uid].box for uid in uids])
+            tboxes = np.array([track.box for _, track in tracks])
             ious = self.iou(tboxes, dets)
             master = ious * (scores / np.mean(scores))
             rows, columns = linear_sum_assignment(-1 * master)
 
         # check track assignments
         assign = dict(zip(rows, columns))
-        for i, uid in enumerate(uids):
+        for i, (uid, track) in enumerate(tracks):
             if i not in assign or master[i, assign[i]] < self.iou_threshold:
-                self.tracks[uid].age += 1
-                if self.tracks[uid].life < self.n_init or self.tracks[uid].age == self.max_age:
+                track.age += 1
+                if track.life < self.n_init or track.age >= self.max_age:
                     del self.tracks[uid]
             else:
-                self.tracks[uid].age = 0
-                self.tracks[uid].box = dets[assign[i]]
-                self.tracks[uid].label = labels[assign[i]]
-                self.tracks[uid].life += 1
+                track.age = 0
+                track.box = dets[assign[i]]
+                track.state = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
+                track.label = labels[assign[i]]
+                track.life += 1
 
         # check det assignments
         assign = dict(zip(columns, rows))
         for i, box in enumerate(dets):
-            if i not in assign or uids[assign[i]] not in self.tracks:
+            if i not in assign or master[assign[i], i] < self.iou_threshold:
                 uid = next(self.ids)
                 self.tracks[uid] = Track(uid, box, image, labels[i], 1)
 
@@ -141,43 +142,40 @@ class Re3Tracker(object):
     # starting_boxes{None or dictionary of unique_id to 4x1 numpy array or list}: unique_ids to starting box.
     #    Starting boxes only need to be provided if it is a new track. Bounding boxes in X1, Y1, X2, Y2 format.
     def multi_track(self, image):
-        unique_ids = [uid for uid in self.tracks]
-        if len(unique_ids) == 0:
+        tracks = list(self.tracks.items())
+        if len(tracks) == 0:
             return {}
 
         image = image.copy()[:,:,::-1]
 
         # Get inputs for each track.
-        images = []
-        lstmStates = [[] for _ in range(4)]
-        pastBBoxesPadded = []
-        for unique_id in unique_ids:
-            lstmState, pastBBox, prevImage, originalFeatures, forwardCount = self.tracks[unique_id].data
-            croppedInput0, pastBBoxPadded = im_util.get_cropped_input(prevImage, pastBBox, CROP_PAD, CROP_SIZE)
-            croppedInput1,_ = im_util.get_cropped_input(image, pastBBox, CROP_PAD, CROP_SIZE)
-            pastBBoxesPadded.append(pastBBoxPadded)
-            images.extend([croppedInput0, croppedInput1])
+        images = [None] * (2 * len(tracks))
+        lstmStates = [[None] * len(tracks) for _ in range(4)]
+        pastBBoxesPadded = [None] * len(tracks)
+        for i, (uid, track) in enumerate(tracks):
+            lstmState, pastBBox, prevCrop, originalFeatures, forwardCount = track.data
+            croppedInput0, pastBBoxPadded = prevCrop
+            croppedInput1, _ = im_util.get_cropped_input(image, pastBBox, CROP_PAD, CROP_SIZE)
+            pastBBoxesPadded[i] = pastBBoxPadded
+            images[2*i] = croppedInput0
+            images[2*i+1] = croppedInput1
             for ss,state in enumerate(lstmState):
-                lstmStates[ss].append(state.squeeze())
+                lstmStates[ss][i] = state.squeeze()
 
-        lstmStateArrays = []
-        for state in lstmStates:
-            lstmStateArrays.append(np.array(state))
+        lstmStateArrays = [np.array(state) for state in lstmStates]
 
         feed_dict = {
-                self.imagePlaceholder : images,
-                self.prevLstmState : lstmStateArrays,
-                self.batch_size : len(images) / 2
-                }
+            self.imagePlaceholder : images,
+            self.prevLstmState : lstmStateArrays,
+            self.batch_size : len(images) / 2
+        }
+
         rawOutput, s1, s2 = self.sess.run([self.outputs, self.state1, self.state2], feed_dict=feed_dict)
-        outputBoxes = np.zeros((len(unique_ids), 4))
-        for uu,unique_id in enumerate(unique_ids):
-            lstmState, pastBBox, prevImage, originalFeatures, forwardCount = self.tracks[unique_id].data
+        for uu, (uid, track) in enumerate(tracks):
+            lstmState, _, _, originalFeatures, forwardCount = track.data
             lstmState = [s1[0][[uu],:], s1[1][[uu],:], s2[0][[uu],:], s2[1][[uu],:]]
             if forwardCount == 0:
                 originalFeatures = [s1[0][[uu],:], s1[1][[uu],:], s2[0][[uu],:], s2[1][[uu],:]]
-
-            prevImage = image
 
             # Shift output box to full image coordinate system.
             pastBBoxPadded = pastBBoxesPadded[uu]
@@ -186,22 +184,19 @@ class Re3Tracker(object):
             if forwardCount > 0 and forwardCount % MAX_TRACK_LENGTH == 0:
                 croppedInput, _ = im_util.get_cropped_input(image, outputBox, CROP_PAD, CROP_SIZE)
                 input = np.tile(croppedInput[np.newaxis,...], (2,1,1,1))
+
                 feed_dict = {
-                        self.imagePlaceholder : input,
-                        self.prevLstmState : originalFeatures,
-                        self.batch_size : 1,
-                        }
+                    self.imagePlaceholder : input,
+                    self.prevLstmState : originalFeatures,
+                    self.batch_size : 1,
+                }
+
                 _, s1_new, s2_new = self.sess.run([self.outputs, self.state1, self.state2], feed_dict=feed_dict)
                 lstmState = [s1_new[0], s1_new[1], s2_new[0], s2_new[1]]
 
-            forwardCount += 1
-            self.total_forward_count += 1
+            track.update(lstmState, outputBox, image, originalFeatures, forwardCount+1)
 
-            outputBoxes[uu,:] = outputBox
-            self.tracks[unique_id].update(lstmState, outputBox, image, originalFeatures, forwardCount)
-
-
-        return {uid: (track.box, track.label) for uid, track in self.tracks.items()}
+        return {uid: (track.box, track.label) for uid, track in tracks}
 
 
 

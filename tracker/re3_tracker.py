@@ -98,6 +98,7 @@ class Re3Tracker(object):
             :scores[np.array[float]] |  (d,)   | detector score per detection
             :labels[list[string]]    |  (d,)   | detector label per detection
         """
+        image = image[:, :, ::-1]
         tracks = list(self.tracks.items())
 
         if len(tracks) == 0:
@@ -196,8 +197,4 @@ class Re3Tracker(object):
 
             track.update(lstmState, outputBox, image, originalFeatures, forwardCount+1)
 
-        return {uid: (track.box, track.label) for uid, track in tracks}
-
-
-
-
+        return {uid: [track.box, track.label, track.age] for uid, track in tracks}

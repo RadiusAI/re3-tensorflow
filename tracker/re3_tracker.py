@@ -27,39 +27,26 @@ SPEED_OUTPUT = True
 
 
 class Track:
-    def __init__(self, uid, box, image, label, life):
-        self.uid = uid
-        self.state = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
+    def __init__(self, box, label, life):
         self.box = np.array(box)
-        self.image = image
-        self.features = None
-        self.count = 0
         self.label = label
         self.life = life
+
+        self.features = None
+        self.state = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
+        self.count = 0
         self.age = 0
-
-    @property
-    def data(self):
-        return self.state, self.box, self.image, self.features, self.count
-
-    def update(self, state, box, image, features, count):
-        self.state = state
-        self.box = box
-        self.image = image
-        self.features = features
-        self.count = count
 
 
 class Re3Tracker(object):
     def __init__(self, model_path, iou_threshold, n_init, max_age, gpu_id=GPU_ID):
         os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
         tf.Graph().as_default()
-        self.imagePlaceholder = tf.placeholder(tf.uint8, shape=(None, CROP_SIZE, CROP_SIZE, 3))
-        self.prevLstmState = tuple([tf.placeholder(tf.float32, shape=(None, LSTM_SIZE)) for _ in range(4)])
+        self.image_holder = tf.placeholder(tf.uint8, shape=(None, CROP_SIZE, CROP_SIZE, 3))
+        self.lstms_holder = tuple([tf.placeholder(tf.float32, shape=(None, LSTM_SIZE)) for _ in range(4)])
         self.batch_size = tf.placeholder(tf.int32, shape=())
         self.outputs, self.state1, self.state2 = network.inference(
-                self.imagePlaceholder, num_unrolls=1, batch_size=self.batch_size, train=False,
-                prevLstmState=self.prevLstmState)
+            self.image_holder, num_unrolls=1, batch_size=self.batch_size, train=False, prevLstmState=self.lstms_holder)
         self.sess = tf_util.Session()
         self.sess.run(tf.global_variables_initializer())
         ckpt = tf.train.get_checkpoint_state(model_path)
@@ -72,25 +59,23 @@ class Re3Tracker(object):
         self.iou_threshold = iou_threshold
         self.n_init = n_init
         self.max_age = max_age
-        self.total_forward_count = -1
-
+        self.prev_image = None
 
     @staticmethod
     def iou(a, b):
-        a = a[:,:,np.newaxis]
+        a = a[:, :, np.newaxis]
         b = b.T[np.newaxis]
 
-        lt = np.maximum(a[:,:2], b[:,:2])
-        rb = np.minimum(a[:,2:], b[:,2:])
+        lt = np.maximum(a[:, :2], b[:, :2])
+        rb = np.minimum(a[:, 2:], b[:, 2:])
         intersect = np.prod(np.maximum(rb - lt, 0), axis=1)
 
-        a_area = np.prod(a[:,2:] - a[:,:2], axis=1)
-        b_area = np.prod(b[:,2:] - b[:,:2], axis=1)
+        a_area = np.prod(a[:, 2:] - a[:, :2], axis=1)
+        b_area = np.prod(b[:, 2:] - b[:, :2], axis=1)
         union = a_area + b_area - intersect
 
         return intersect / union
 
-    
     def update(self, image, dets, scores, labels):
         """
             :image [np.array[float]] | (h,w,3) | bgr image for a frame
@@ -98,111 +83,83 @@ class Re3Tracker(object):
             :scores[np.array[float]] |  (d,)   | detector score per detection
             :labels[list[string]]    |  (d,)   | detector label per detection
         """
-        uids = [id_ for id_ in self.tracks]
+        tracks = list(self.tracks.items())
 
-        if len(uids) == 0:
-            for box,label in zip(dets, labels):
-                uid = next(self.ids)
-                self.tracks[uid] = Track(uid, box, image, label, self.n_init)
-            return
-
-        if dets.size == 0:
-            rows = []
-            columns = []
-        else:
-            tboxes = np.array([self.tracks[uid].box for uid in uids])
-            ious = self.iou(tboxes, dets)
-            master = ious * (scores / np.mean(scores))
+        rows, columns = [], []
+        if dets.size > 0 and len(tracks) > 0:
+            tboxes = np.array([track.box for _, track in tracks])
+            master = self.iou(tboxes, dets)
             rows, columns = linear_sum_assignment(-1 * master)
 
         # check track assignments
-        assign = dict(zip(rows, columns))
-        for i, uid in enumerate(uids):
-            if i not in assign or master[i, assign[i]] < self.iou_threshold:
-                self.tracks[uid].age += 1
-                if self.tracks[uid].life < self.n_init or self.tracks[uid].age == self.max_age:
-                    del self.tracks[uid]
-            else:
-                self.tracks[uid].age = 0
-                self.tracks[uid].box = dets[assign[i]]
-                self.tracks[uid].label = labels[assign[i]]
-                self.tracks[uid].life += 1
+        assigns = dict(zip(rows, columns))
+        for i, (uid, track) in enumerate(tracks):
+            track.age += 1
+            j = assigns.get(i, -1)
+            if i != -1 and master[i, j] > self.iou_threshold:
+                self.tracks[uid] = Track(dets[j], labels[j], track.life + 1)
+            elif track.life < self.n_init or track.age >= self.max_age:
+                del self.tracks[uid]
 
         # check det assignments
-        assign = dict(zip(columns, rows))
+        assigns = dict(zip(columns, rows))
         for i, box in enumerate(dets):
-            if i not in assign or uids[assign[i]] not in self.tracks:
+            if i not in assigns or master[assigns[i], i] <= self.iou_threshold:
                 uid = next(self.ids)
-                self.tracks[uid] = Track(uid, box, image, labels[i], 1)
-
+                self.tracks[uid] = Track(box, labels[i], 0)
 
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.
     # image{str or numpy array}: The current image or the path to the current image.
     # starting_boxes{None or dictionary of unique_id to 4x1 numpy array or list}: unique_ids to starting box.
     #    Starting boxes only need to be provided if it is a new track. Bounding boxes in X1, Y1, X2, Y2 format.
     def multi_track(self, image):
-        unique_ids = [uid for uid in self.tracks]
-        if len(unique_ids) == 0:
+        image = image.copy()[:, :, ::-1]
+        tracks = list(self.tracks.items())
+        if len(tracks) == 0:
+            self.prev_image = image
             return {}
 
-        image = image.copy()[:,:,::-1]
-
         # Get inputs for each track.
-        images = []
-        lstmStates = [[] for _ in range(4)]
-        pastBBoxesPadded = []
-        for unique_id in unique_ids:
-            lstmState, pastBBox, prevImage, originalFeatures, forwardCount = self.tracks[unique_id].data
-            croppedInput0, pastBBoxPadded = im_util.get_cropped_input(prevImage, pastBBox, CROP_PAD, CROP_SIZE)
-            croppedInput1,_ = im_util.get_cropped_input(image, pastBBox, CROP_PAD, CROP_SIZE)
-            pastBBoxesPadded.append(pastBBoxPadded)
-            images.extend([croppedInput0, croppedInput1])
-            for ss,state in enumerate(lstmState):
-                lstmStates[ss].append(state.squeeze())
+        crops = [None] * (2 * len(tracks))
+        past_boxes = [None] * len(tracks)
+        lstm_states = [[None] * len(tracks) for _ in range(4)]
+        for i, (uid, track) in enumerate(tracks):
+            lstm_state, box = track.state, track.box
+            past_crop, past_box = im_util.get_cropped_input(self.prev_image, box, CROP_PAD, CROP_SIZE)
+            curr_crop, _ = im_util.get_cropped_input(image, box, CROP_PAD, CROP_SIZE)
 
-        lstmStateArrays = []
-        for state in lstmStates:
-            lstmStateArrays.append(np.array(state))
+            past_boxes[i] = past_box
+            crops[2*i], crops[2*i+1] = past_crop, curr_crop
+            for ss, state in enumerate(lstm_state):
+                lstm_states[ss][i] = state.squeeze()
+        self.prev_image = image
+        lstm_states = [np.array(states) for states in lstm_states]
 
         feed_dict = {
-                self.imagePlaceholder : images,
-                self.prevLstmState : lstmStateArrays,
-                self.batch_size : len(images) / 2
-                }
-        rawOutput, s1, s2 = self.sess.run([self.outputs, self.state1, self.state2], feed_dict=feed_dict)
-        outputBoxes = np.zeros((len(unique_ids), 4))
-        for uu,unique_id in enumerate(unique_ids):
-            lstmState, pastBBox, prevImage, originalFeatures, forwardCount = self.tracks[unique_id].data
-            lstmState = [s1[0][[uu],:], s1[1][[uu],:], s2[0][[uu],:], s2[1][[uu],:]]
-            if forwardCount == 0:
-                originalFeatures = [s1[0][[uu],:], s1[1][[uu],:], s2[0][[uu],:], s2[1][[uu],:]]
+            self.image_holder: crops,
+            self.lstms_holder: lstm_states,
+            self.batch_size: len(tracks)
+        }
+        raw_output, s1, s2 = self.sess.run([self.outputs, self.state1, self.state2], feed_dict=feed_dict)
+        for i, (uid, track) in enumerate(tracks):
+            lstm_state = [s1[0][[i], :], s1[1][[i], :], s2[0][[i], :], s2[1][[i], :]]
+            features = lstm_state if track.count else track.features
 
-            prevImage = image
-
-            # Shift output box to full image coordinate system.
-            pastBBoxPadded = pastBBoxesPadded[uu]
-            outputBox = bb_util.from_crop_coordinate_system(rawOutput[uu,:].squeeze() / 10.0, pastBBoxPadded, 1, 1)
-
-            if forwardCount > 0 and forwardCount % MAX_TRACK_LENGTH == 0:
-                croppedInput, _ = im_util.get_cropped_input(image, outputBox, CROP_PAD, CROP_SIZE)
-                input = np.tile(croppedInput[np.newaxis,...], (2,1,1,1))
+            output_box = bb_util.from_crop_coordinate_system(raw_output[i, :].squeeze() / 10.0, past_boxes[i], 1, 1)
+            if track.count > 0 and track.count % MAX_TRACK_LENGTH == 0:
+                crop, _ = im_util.get_cropped_input(image, output_box, CROP_PAD, CROP_SIZE)
+                input_ = np.tile(crop[np.newaxis, ...], (2, 1, 1, 1))
                 feed_dict = {
-                        self.imagePlaceholder : input,
-                        self.prevLstmState : originalFeatures,
-                        self.batch_size : 1,
-                        }
+                    self.image_holder: crop,
+                    self.lstms_holder: features,
+                    self.batch_size: 1
+                }
                 _, s1_new, s2_new = self.sess.run([self.outputs, self.state1, self.state2], feed_dict=feed_dict)
-                lstmState = [s1_new[0], s1_new[1], s2_new[0], s2_new[1]]
+                lstm_state = [s1_new[0], s1_new[1], s2_new[0], s2_new[1]]
 
-            forwardCount += 1
-            self.total_forward_count += 1
+            track.state = lstm_state
+            track.box = output_box
+            track.features = features
+            track.count += 1
 
-            outputBoxes[uu,:] = outputBox
-            self.tracks[unique_id].update(lstmState, outputBox, image, originalFeatures, forwardCount)
-
-
-        return {uid: (track.box, track.label) for uid, track in self.tracks.items()}
-
-
-
-
+        return {uid: [track.box, track.label] for uid, track in tracks}

@@ -96,7 +96,7 @@ class Re3Tracker(object):
         for i, (uid, track) in enumerate(tracks):
             track.age += 1
             j = assigns.get(i, -1)
-            if i != -1 and master[i, j] > self.iou_threshold:
+            if j != -1 and master[i, j] > self.iou_threshold:
                 self.tracks[uid] = Track(dets[j], labels[j], track.life + 1)
             elif track.life < self.n_init or track.age >= self.max_age:
                 del self.tracks[uid]

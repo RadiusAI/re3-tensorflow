@@ -27,10 +27,11 @@ SPEED_OUTPUT = True
 
 
 class Track:
-    def __init__(self, box, label, life):
+    def __init__(self, box, label, life, score):
         self.box = np.array(box)
         self.label = label
         self.life = life
+        self.score = score
 
         self.features = None
         self.state = [np.zeros((1, LSTM_SIZE)) for _ in range(4)]
@@ -89,7 +90,7 @@ class Re3Tracker(object):
         if dets.size > 0 and len(tracks) > 0:
             tboxes = np.array([track.box for _, track in tracks])
             master = self.iou(tboxes, dets)
-            rows, columns = linear_sum_assignment(-1 * master)
+            rows, columns = linear_sum_assignment(-master)
 
         # check track assignments
         assigns = dict(zip(rows, columns))
@@ -97,7 +98,7 @@ class Re3Tracker(object):
             track.age += 1
             j = assigns.get(i, -1)
             if j != -1 and master[i, j] > self.iou_threshold:
-                self.tracks[uid] = Track(dets[j], labels[j], track.life + 1)
+                self.tracks[uid] = Track(dets[j], labels[j], track.life + 1, scores[j])
             elif track.life < self.n_init or track.age >= self.max_age:
                 del self.tracks[uid]
 
@@ -106,7 +107,7 @@ class Re3Tracker(object):
         for i, box in enumerate(dets):
             if i not in assigns or master[assigns[i], i] <= self.iou_threshold:
                 uid = next(self.ids)
-                self.tracks[uid] = Track(box, labels[i], 0)
+                self.tracks[uid] = Track(box, labels[i], 0, scores[i])
 
     # unique_ids{list{string}}: A list of unique ids for the objects being tracked.
     # image{str or numpy array}: The current image or the path to the current image.
@@ -162,4 +163,4 @@ class Re3Tracker(object):
             track.features = features
             track.count += 1
 
-        return {uid: [track.box, track.label] for uid, track in tracks}
+        return {uid: [track.box, track.label, track.score] for uid, track in tracks}
